@@ -716,7 +716,22 @@ NTSTATUS ProcessInit() {
   return STATUS_SUCCESS;
 }
 
-void ProcessTerm(HANDLE Handle, BOOL After, NTSTATUS Status) {}
+void ProcessTerm(HANDLE Handle, BOOL After, NTSTATUS Status) {
+  // NtTerminateProcess(NULL) stops the other threads before DLL detach runs.
+  // Drain compilation/invalidation first, and keep those locks owned by the
+  // surviving thread across the syscall. Otherwise a terminated compiler can
+  // leave a shared lock held forever when DLL detach frees executable memory.
+  if (Handle || !CTX) {
+    return;
+  }
+  if (!After) {
+    ThreadCreationMutex.lock();
+    CTX->GetCodeInvalidationMutex().lock();
+  } else {
+    CTX->GetCodeInvalidationMutex().unlock();
+    ThreadCreationMutex.unlock();
+  }
+}
 
 class ScopedCallbackDisable {
 private:
