@@ -1,4 +1,4 @@
-[中文](https://github.com/FEX-Emu/FEX/blob/main/docs/Readme_CN.md)
+[Chinese](https://github.com/FEX-Emu/FEX/blob/main/docs/Readme_CN.md)
 # FEX: Emulate x86 Programs on ARM64
 FEX allows you to run x86 applications on ARM64 Linux devices, similar to qemu-user and box64.
 It offers broad compatibility with both 32-bit and 64-bit binaries, and it can be used alongside Wine/Proton to play Windows games.
