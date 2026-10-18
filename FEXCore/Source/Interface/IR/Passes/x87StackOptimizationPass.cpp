@@ -1161,6 +1161,15 @@ void X87StackOptimization::Run(IREmitter* Emit) {
         break;
       }
 
+      case OP_READSTACKTOP: {
+        // Fast-path TOP changes are deferred in StackData; slow-path TOP is
+        // already represented by the cache. Merely observing it must not
+        // synchronize values/tags or reset either representation.
+        Ref NewTop = GetOffsetTopWithCache_Slow(SlowPath ? 0 : StackData.TopOffset, true);
+        IREmit->ReplaceUsesWithAfter(CodeNode, NewTop, CodeNode);
+        break;
+      }
+
       case OP_SYNCSTACKTOSLOW: {
         // This synchronizes stack values but doesn't necessarily moves us off the FastPath!
         Ref NewTop = SynchronizeStackValues();

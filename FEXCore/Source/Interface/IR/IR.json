@@ -2895,6 +2895,14 @@
       }
     },
     "F80": {
+      "GPR = ReadStackTop": {
+        "Desc": [
+          "Returns the current virtual x87 stack top without spilling stack values."
+        ],
+        "X87": true,
+        "HasSideEffects": true,
+        "DestSize": "OpSize::i64Bit"
+      },
       "GPR = SyncStackToSlow": {
         "Desc": [
           "Synchronizes the virtual stack environment to the physical registers.",

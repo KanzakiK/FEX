@@ -769,7 +769,9 @@ Ref OpDispatchBuilder::ReconstructFSW_Helper(Ref T) {
 // There's no load Status Word instruction but you can load it through frstor
 // or fldenv.
 void OpDispatchBuilder::X87FNSTSW(OpcodeArgs) {
-  Ref TopValue = _SyncStackToSlow();
+  // Reading FSW observes TOP and the condition flags, not MM register values
+  // or tags. Keep cached x87 operands live across status-word reads.
+  Ref TopValue = _ReadStackTop();
   Ref StatusWord = ReconstructFSW_Helper(TopValue);
   StoreResultGPR(Op, StatusWord);
 }
