@@ -577,7 +577,21 @@ void BTCpuProcessInit() {
   }
 }
 
-void BTCpuProcessTerm(HANDLE Handle, BOOL After, ULONG Status) {}
+void BTCpuProcessTerm(HANDLE Handle, BOOL After, ULONG Status) {
+  // NtTerminateProcess(NULL) stops peer threads before guest DLL detach runs.
+  // Drain compilation/invalidation and retain the locks across that syscall,
+  // so a terminated compiler cannot strand a reader during detach unmapping.
+  if (Handle || !CTX) {
+    return;
+  }
+  if (!After) {
+    ThreadCreationMutex.lock();
+    CTX->GetCodeInvalidationMutex().lock();
+  } else {
+    CTX->GetCodeInvalidationMutex().unlock();
+    ThreadCreationMutex.unlock();
+  }
+}
 
 void BTCpuThreadInit() {
   static constexpr size_t DefaultWow64CS {4};
