@@ -3,6 +3,8 @@
 #include <type_traits>
 #include <fcntl.h>
 #include <string>
+#include <cstdlib>
+#include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -77,10 +79,24 @@ static NTSTATUS FEXUnixLib_SetVMANameHandler(void* _Args) {
 }
 
 constexpr static int USER_PERMS = S_IRWXU | S_IRWXG | S_IRWXO;
+#ifdef __ANDROID__
+// Android has no POSIX shm namespace. Keep the diagnostic stats file in the
+// app-owned temporary directory; Wine's CPU modules still use the same ABI.
+static std::string StatsPath() {
+  const char* tmp = std::getenv("TMPDIR");
+  if (!tmp || tmp[0] != '/') return {};
+  return std::string(tmp) + "/fex-" + std::to_string(getpid()) + "-stats";
+}
+#endif
 static inline void* InitializeSHM(uint32_t MapSize, uint32_t MaxSize) {
   void* Base {};
+#ifdef __ANDROID__
+  const std::string Name = StatsPath();
+  int fd = open(Name.c_str(), O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+#else
   const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
   int fd = shm_open(Name.c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
+#endif
 
   if (fd == -1) {
     return nullptr;
@@ -121,10 +137,15 @@ err:
 
 static inline bool AllocateMoreSlots(void* SHMBase, uint32_t NewSize) {
   bool Result {};
+#ifdef __ANDROID__
+  const std::string Name = StatsPath();
+  int fd = open(Name.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+#else
   const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
 
   // When allocating more slots, open the fd without O_TRUNC | O_CREAT.
   int fd = shm_open(Name.c_str(), O_RDWR, USER_PERMS);
+#endif
   if (fd == -1) {
     return false;
   }
@@ -158,8 +179,13 @@ static NTSTATUS FEXUnixLib_GetSHMStatsVMAHandler(void* _Args) {
 }
 
 static NTSTATUS FEXUnixLib_DeleteSHMStatsFileHandler(void* _Args) {
+#ifdef __ANDROID__
+  const std::string Name = StatsPath();
+  unlink(Name.c_str());
+#else
   const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
   shm_unlink(Name.c_str());
+#endif
   return STATUS_SUCCESS;
 }
 
