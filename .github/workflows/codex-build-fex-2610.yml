@@ -10,13 +10,15 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      FEX_COMMIT: ${{ github.sha }}
 
     steps:
-      - name: Check out upstream FEX-2610
+      - name: Check out the FEX-2610 Bionic candidate
         uses: actions/checkout@v5
         with:
-          repository: taowen/FEX
-          ref: FEX-2610
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
           submodules: recursive
           fetch-depth: 1
 
@@ -37,6 +39,16 @@ jobs:
           mkdir -p "$HOME/llvm-mingw"
           tar -xJf "$archive" -C "$HOME/llvm-mingw" --strip-components=1
           echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Android NDK
+        run: |
+          set -euo pipefail
+          archive=/tmp/android-ndk-r29.zip
+          url=https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          expected=87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b
+          curl -L --fail --retry 4 -o "$archive" "$url"
+          echo "$expected  $archive" | sha1sum -c -
+          unzip -q "$archive" -d "$HOME/android-sdk"
 
       - name: Build wow64 and arm64ec FEX DLLs
         run: |
@@ -64,6 +76,21 @@ jobs:
             DESTDIR="$PWD/stage_${target}" cmake --build "build_${target}" -t install
           done
 
+      - name: Build Bionic UnixLib
+        run: |
+          set -euo pipefail
+          ndk="$HOME/android-sdk/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64"
+          "$ndk/bin/aarch64-linux-android29-clang++" \
+            -std=c++17 -fPIC -O2 \
+            -ffile-prefix-map="$PWD=/usr/src/arlinux/fex" \
+            -c Source/Windows/UnixLib/FEXUnixLib.cpp \
+            -o FEXUnixLib.o
+          "$ndk/bin/aarch64-linux-android29-clang++" \
+            -shared -static-libstdc++ -Wl,-z,defs -Wl,-z,max-page-size=16384 \
+            FEXUnixLib.o \
+            -o libwow64fex.so
+          cp libwow64fex.so libarm64ecfex.so
+
       - name: Package Bionic FEX component
         shell: bash
         run: |
@@ -90,6 +117,7 @@ jobs:
           python3 - <<'PY'
           import hashlib
           import json
+          import os
           from pathlib import Path
 
           root = Path("export")
@@ -103,7 +131,7 @@ jobs:
           metadata = {
               "protocol": 1,
               "libc": "bionic",
-              "fexCommit": "14c92681f4d62cf84d901460e0358de09c8847a7",
+              "fexCommit": os.environ["FEX_COMMIT"],
               "files": files,
           }
           (root / "bionic-runtime.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
@@ -117,9 +145,18 @@ jobs:
           for relative in metadata["files"]:
               assert (Path("export") / relative).is_file(), relative
           PY
-          tar --owner=0 --group=0 --mtime='@0' -czf export/runtime.tar.gz \
-            -C export bionic-runtime.json files
+          tar --owner=0 --group=0 --mtime='@0' -czf export/runtime.tar.gz -C export \
+            bionic-runtime.json \
+            files/share/fex-emu/Config.json \
+            files/lib/wine/aarch64-windows/libwow64fex.dll \
+            files/lib/wine/aarch64-windows/libarm64ecfex.dll
+          mkdir -p export/unixlib/files/lib/wine/aarch64-unix
+          cp libwow64fex.so libarm64ecfex.so export/unixlib/files/lib/wine/aarch64-unix/
+          tar --owner=0 --group=0 --mtime='@0' -czf export/unixlib.tar.gz -C export/unixlib \
+            files/lib/wine/aarch64-unix/libwow64fex.so \
+            files/lib/wine/aarch64-unix/libarm64ecfex.so
           sha256sum export/runtime.tar.gz | tee export/runtime.tar.gz.sha256
+          sha256sum export/unixlib.tar.gz | tee export/unixlib.tar.gz.sha256
 
       - name: Upload runtime component
         uses: actions/upload-artifact@v4
@@ -128,5 +165,7 @@ jobs:
           path: |
             export/runtime.tar.gz
             export/runtime.tar.gz.sha256
+            export/unixlib.tar.gz
+            export/unixlib.tar.gz.sha256
           if-no-files-found: error
           retention-days: 3
