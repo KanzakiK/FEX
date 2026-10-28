@@ -1,0 +1,132 @@
+name: Codex build FEX-2610 Windows components
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out upstream FEX-2610
+        uses: actions/checkout@v5
+        with:
+          repository: taowen/FEX
+          ref: FEX-2610
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake file ninja-build python3 xz-utils
+
+      - name: Install pinned llvm-mingw
+        run: |
+          set -euo pipefail
+          archive=/tmp/llvm-mingw.tar.xz
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz
+          expected=cee8d2ce3da5145ce4dc882e70d0b0719a783d53a99752c60948fc0659975a65
+          curl -L --fail --retry 4 -o "$archive" "$url"
+          echo "$expected  $archive" | sha256sum -c -
+          mkdir -p "$HOME/llvm-mingw"
+          tar -xJf "$archive" -C "$HOME/llvm-mingw" --strip-components=1
+          echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Build wow64 and arm64ec FEX DLLs
+        run: |
+          set -euo pipefail
+          for target in wow64 arm64ec; do
+            case "$target" in
+              wow64) triple=aarch64-w64-mingw32 ;;
+              arm64ec) triple=arm64ec-w64-mingw32 ;;
+            esac
+            cmake -S . -B "build_${target}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE=Data/CMake/toolchain_mingw.cmake \
+              -DMINGW_TRIPLE="${triple}" \
+              -DCMAKE_INSTALL_LIBDIR=/usr/lib/wine/aarch64-windows \
+              -G Ninja \
+              -DENABLE_LTO=False \
+              -DENABLE_ASSERTIONS=False \
+              -DENABLE_JEMALLOC_GLIBC_ALLOC=False \
+              -DBUILD_TESTING=False \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DTUNE_ARCH=generic \
+              -DTUNE_CPU=none \
+              -DRANGES_NATIVE=OFF
+            cmake --build "build_${target}" --parallel 4
+            DESTDIR="$PWD/stage_${target}" cmake --build "build_${target}" -t install
+          done
+
+      - name: Package Bionic FEX component
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export/files/lib/wine/aarch64-windows
+          mkdir -p export/files/share/fex-emu
+          cp stage_wow64/usr/lib/wine/aarch64-windows/libwow64fex.dll \
+             export/files/lib/wine/aarch64-windows/libwow64fex.dll
+          cp stage_arm64ec/usr/lib/wine/aarch64-windows/libarm64ecfex.dll \
+             export/files/lib/wine/aarch64-windows/libarm64ecfex.dll
+          cat > export/files/share/fex-emu/Config.json <<'EOF'
+          {
+            "Config": {
+              "TSOEnabled": "1",
+              "X87ReducedPrecision": "1",
+              "VectorTSOEnabled": "0",
+              "MemcpySetTSOEnabled": "0",
+              "HalfBarrierTSOEnabled": "1",
+              "MaxInst": "500",
+              "Multiblock": "1"
+            }
+          }
+          EOF
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("export")
+          files = {}
+          for relative in (
+              "files/lib/wine/aarch64-windows/libarm64ecfex.dll",
+              "files/lib/wine/aarch64-windows/libwow64fex.dll",
+              "files/share/fex-emu/Config.json",
+          ):
+              files[relative] = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+          metadata = {
+              "protocol": 1,
+              "libc": "bionic",
+              "fexCommit": "14c92681f4d62cf84d901460e0358de09c8847a7",
+              "files": files,
+          }
+          (root / "bionic-runtime.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
+          PY
+          file export/files/lib/wine/aarch64-windows/*.dll
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata = json.loads(Path("export/bionic-runtime.json").read_text())
+          for relative in metadata["files"]:
+              assert (Path("export") / relative).is_file(), relative
+          PY
+          tar --owner=0 --group=0 --mtime='@0' -czf export/runtime.tar.gz \
+            -C export bionic-runtime.json files
+          sha256sum export/runtime.tar.gz | tee export/runtime.tar.gz.sha256
+
+      - name: Upload runtime component
+        uses: actions/upload-artifact@v4
+        with:
+          name: fex-2610-bionic-component
+          path: |
+            export/runtime.tar.gz
+            export/runtime.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 3
